@@ -6,7 +6,10 @@
 #include "config.h"
 #include "compute.h" 
 
-// External globals ...
+// External globals
+//   hPos  = array of positions
+//   hVel  = array of velocities 
+//   mass  = array of masses
 extern vector3 *hVel, *hPos;
 extern double *mass;
 
@@ -14,6 +17,8 @@ extern double *mass;
 vector3 *d_vel, *d_pos, *d_accels;
 double *d_mass;
 
+
+// helper for catching cuda errors
 #define cudaCheckError(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
 {
@@ -24,15 +29,18 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
    }
 }
 
-// 1st Kernel : Pairwise accelerations
+// Kernel 1 : Pairwise accelerations; stored in a flattened matrix
 __global__ void pairwise_kernel(vector3 *accels, vector3 *pos, double *mass) {
+	// mapping thread to indices
     int i = blockIdx.y * blockDim.y + threadIdx.y; 
     int j = blockIdx.x * blockDim.x + threadIdx.x; 
 
+	// only computes if inside bounds
     if (i < NUMENTITIES && j < NUMENTITIES) {
         if (i == j) {
             FILL_VECTOR(accels[i * NUMENTITIES + j], 0, 0, 0);
         } else {
+			// distance vector from j → i
             vector3 distance;
             distance[0] = pos[i][0] - pos[j][0];
             distance[1] = pos[i][1] - pos[j][1];
@@ -42,6 +50,7 @@ __global__ void pairwise_kernel(vector3 *accels, vector3 *pos, double *mass) {
             double magnitude = sqrt(magnitude_sq);
             double accelmag = -1 * GRAV_CONSTANT * mass[j] / magnitude_sq;
 
+			// normalize and scale
             FILL_VECTOR(accels[i * NUMENTITIES + j], 
                         accelmag * distance[0] / magnitude, 
                         accelmag * distance[1] / magnitude, 
@@ -50,7 +59,7 @@ __global__ void pairwise_kernel(vector3 *accels, vector3 *pos, double *mass) {
     }
 }
 
-// 1st Kernel : Update Physics
+// 2nd Kernel : update physics; each thread handles object i
 __global__ void update_kernel(vector3 *accels, vector3 *pos, vector3 *vel) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -62,10 +71,12 @@ __global__ void update_kernel(vector3 *accels, vector3 *pos, vector3 *vel) {
             accel_sum[2] += accels[i * NUMENTITIES + j][2];
         }
 
+		// uodate velocity
         vel[i][0] += accel_sum[0] * INTERVAL;
         vel[i][1] += accel_sum[1] * INTERVAL;
         vel[i][2] += accel_sum[2] * INTERVAL;
 
+		// update position
         pos[i][0] += vel[i][0] * INTERVAL;
         pos[i][1] += vel[i][1] * INTERVAL;
         pos[i][2] += vel[i][2] * INTERVAL;
